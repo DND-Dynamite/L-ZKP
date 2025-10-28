@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mobile Geofencing Tracker</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Custom styles for better mobile experience */
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f7f7f7;
+        }
+        .card {
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+        }
+        .zone-status {
+            transition: background-color 0.5s ease-in-out;
+        }
+    </style>
+</head>
+<body class="p-4 sm:p-6 md:p-8 min-h-screen flex flex-col items-center">
+
+    <div class="w-full max-w-lg">
+
+        <h1 class="text-3xl font-bold text-gray-800 mb-6 text-center">
+            Geofence Tracker
+        </h1>
+
+        <!-- Geofence Setup Card -->
+        <div id="setupCard" class="card bg-white p-6 rounded-xl mb-6">
+            <h2 class="text-xl font-semibold mb-4 text-gray-700">1. Define Zone</h2>
+
+            <div class="space-y-4">
+                <div>
+                    <label for="radius" class="block text-sm font-medium text-gray-600">Radius (Meters):</label>
+                    <input type="number" id="radius" value="500" min="50" class="mt-1 block w-full rounded-lg border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 p-2 border">
+                </div>
+                <div>
+                    <p class="text-sm text-gray-500 mb-2">Center Location:</p>
+                    <div class="flex space-x-2">
+                        <input type="number" id="centerLat" placeholder="Latitude" value="37.422" class="mt-1 block w-1/2 rounded-lg border-gray-300 shadow-sm p-2 border text-sm">
+                        <input type="number" id="centerLon" placeholder="Longitude" value="-122.084" class="mt-1 block w-1/2 rounded-lg border-gray-300 shadow-sm p-2 border text-sm">
+                    </div>
+                    <button id="useCurrentLocation" class="mt-2 w-full bg-indigo-100 text-indigo-700 py-2 px-4 rounded-lg text-sm font-medium hover:bg-indigo-200 transition duration-150">
+                        Set Center to My Current Location
+                    </button>
+                </div>
+
+                <button id="toggleGeofencing" class="w-full py-3 rounded-xl text-lg font-bold transition duration-300 bg-green-500 text-white hover:bg-green-600">
+                    Start Tracking
+                </button>
+            </div>
+        </div>
+
+        <!-- Real-Time Status Card -->
+        <div class="card bg-white p-6 rounded-xl mb-6">
+            <h2 class="text-xl font-semibold mb-4 text-gray-700">2. Real-Time Status</h2>
+
+            <div id="zoneStatus" class="zone-status p-4 rounded-xl text-center text-white font-bold text-2xl mb-4 bg-gray-500">
+                Awaiting Location...
+            </div>
+
+            <div class="grid grid-cols-2 gap-4 text-sm">
+                <div>
+                    <p class="text-gray-500">Distance to Center:</p>
+                    <p id="distanceOutput" class="font-semibold text-gray-800">--</p>
+                </div>
+                <div>
+                    <p class="text-gray-500">Current Lat/Lon:</p>
+                    <p id="currentLocationOutput" class="font-semibold text-gray-800">-- / --</p>
+                </div>
+                <div class="col-span-2">
+                    <p class="text-gray-500">Geofence Center:</p>
+                    <p id="centerOutput" class="font-semibold text-gray-800">-- / --</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Event Log Card -->
+        <div class="card bg-white p-6 rounded-xl">
+            <h2 class="text-xl font-semibold mb-4 text-gray-700">3. Event Log</h2>
+            <div id="eventLog" class="h-40 overflow-y-auto bg-gray-50 p-3 rounded-lg border border-gray-200 text-sm space-y-1">
+                <p class="text-gray-400">Events will appear here once tracking starts.</p>
+            </div>
+        </div>
+
+        <!-- Custom Modal for Errors/Messages -->
+        <div id="messageModal" class="hidden fixed inset-0 bg-gray-600 bg-opacity-75 flex items-center justify-center p-4 z-50">
+            <div class="bg-white p-6 rounded-xl w-full max-w-sm card">
+                <h3 class="text-lg font-bold mb-3 text-red-600" id="modalTitle">Error</h3>
+                <p id="modalMessage" class="mb-4 text-gray-700"></p>
+                <button onclick="document.getElementById('messageModal').classList.add('hidden')" class="w-full bg-red-500 text-white py-2 rounded-lg font-medium hover:bg-red-600 transition duration-150">
+                    Close
+                </button>
+            </div>
+        </div>
+
+    </div>
+
+    <script>
+        // --- Configuration & State ---
+        let watchId = null;
+        let isInsideZone = false;
+        let isTracking = false;
+
+        const R = 6371e3; // Earth radius in meters (for Haversine formula)
+
+        const $ = id => document.getElementById(id);
+
+        const radiusInput = $('radius');
+        const centerLatInput = $('centerLat');
+        const centerLonInput = $('centerLon');
+        const toggleButton = $('toggleGeofencing');
+        const useCurrentLocationButton = $('useCurrentLocation');
+        const zoneStatusDiv = $('zoneStatus');
+        const distanceOutput = $('distanceOutput');
+        const currentLocationOutput = $('currentLocationOutput');
+        const centerOutput = $('centerOutput');
+        const eventLog = $('eventLog');
+        const messageModal = $('messageModal');
+        const modalTitle = $('modalTitle');
+        const modalMessage = $('modalMessage');
+
+        // --- Utility Functions ---
+
+        /**
+         * Shows a custom modal with a message instead of using alert()
+         */
+        function showModal(title, message) {
+            modalTitle.textContent = title;
+            modalMessage.textContent = message;
+            messageModal.classList.remove('hidden');
+        }
+
+        /**
+         * Logs an event to the UI log panel.
+         */
+        function logEvent(message, isImportant = false) {
+            const now = new Date();
+            const time = now.toLocaleTimeString();
+            const logItem = document.createElement('p');
+
+            logItem.className = isImportant
+                ? 'text-red-700 font-bold bg-yellow-100 p-1 rounded-md'
+                : 'text-gray-700';
+
+            logItem.innerHTML = `<span class="text-gray-500">[${time}]</span> ${message}`;
+
+            // Add to the top of the log
+            if (eventLog.firstChild && eventLog.firstChild.nodeName === 'P' && eventLog.firstChild.textContent.includes('Events will appear here')) {
+                 eventLog.removeChild(eventLog.firstChild);
+            }
+            eventLog.prepend(logItem);
+
+            // Keep the scroll at the top
+            eventLog.scrollTop = 0;
+        }
+
+        /**
+         * Calculates the distance between two points using the Haversine formula.
+         * Returns distance in meters.
+         */
+        function getDistance(lat1, lon1, lat2, lon2) {
+            const φ1 = lat1 * Math.PI / 180; // φ, λ in radians
+            const φ2 = lat2 * Math.PI / 180;
+            const Δφ = (lat2 - lat1) * Math.PI / 180;
+            const Δλ = (lon2 - lon1) * Math.PI / 180;
+
+            const a = Math.sin(Δφ / 2) * Math.sin(Δφ / 2) +
+                      Math.cos(φ1) * Math.cos(φ2) *
+                      Math.sin(Δλ / 2) * Math.sin(Δλ / 2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+
+            return R * c; // distance in metres
+        }
+
+        /**
+         * Updates the UI status based on the current zone state.
+         */
+        function updateStatusUI(distance, currentLat, currentLon, centerLat, centerLon, isInside) {
+            const distanceKm = (distance / 1000).toFixed(3);
+            const distanceM = distance.toFixed(1);
+
+            distanceOutput.textContent = `${distanceM} m (${distanceKm} km)`;
+            currentLocationOutput.textContent = `${currentLat.toFixed(5)} / ${currentLon.toFixed(5)}`;
+            centerOutput.textContent = `${centerLat.toFixed(5)} / ${centerLon.toFixed(5)}`;
+
+            // Update Zone Status Styling
+            zoneStatusDiv.classList.remove('bg-green-500', 'bg-red-500', 'bg-gray-500');
+
+            if (isTracking) {
+                if (isInside) {
+                    zoneStatusDiv.textContent = 'STATUS: INSIDE ZONE';
+                    zoneStatusDiv.classList.add('bg-green-500');
+                } else {
+                    zoneStatusDiv.textContent = 'STATUS: OUTSIDE ZONE';
+                    zoneStatusDiv.classList.add('bg-red-500');
+                }
+            } else {
+                zoneStatusDiv.textContent = 'Tracking Stopped';
+                zoneStatusDiv.classList.add('bg-gray-500');
+            }
+        }
+
+
+        // --- Geofencing Logic ---
+
+        /**
+         * Main function called on successful location update.
+         */
+        function handleLocationUpdate(position) {
+            const currentLat = position.coords.latitude;
+            const currentLon = position.coords.longitude;
+            const centerLat = parseFloat(centerLatInput.value);
+            const centerLon = parseFloat(centerLonInput.value);
+            const radius = parseFloat(radiusInput.value);
+
+            if (isNaN(centerLat) || isNaN(centerLon) || isNaN(radius)) {
+                logEvent("Invalid fence settings. Please check Latitude, Longitude, and Radius.", true);
+                return;
+            }
+
+            const distance = getDistance(currentLat, currentLon, centerLat, centerLon);
+            const nowInside = distance <= radius;
+
+            // 1. Check for State Change (Entry/Exit)
+            if (nowInside !== isInsideZone) {
+                if (nowInside) {
+                    // Entry Detected
+                    logEvent(`\u2705 ZONE ENTRY: Entered the geofence at ${distance.toFixed(1)} m.`, true);
+                } else {
+                    // Exit Detected
+                    logEvent(`\u274C ZONE EXIT: Left the geofence at ${distance.toFixed(1)} m.`, true);
+                }
+                isInsideZone = nowInside;
+            }
+
+            // 2. Update UI
+            updateStatusUI(distance, currentLat, currentLon, centerLat, centerLon, isInsideZone);
+        }
+
+        /**
+         * Function called if location fails.
+         */
+        function handleLocationError(error) {
+            let message;
+            switch(error.code) {
+                case error.PERMISSION_DENIED:
+                    message = "Geolocation permission denied. Cannot start tracking.";
+                    break;
+                case error.POSITION_UNAVAILABLE:
+                    message = "Location information is unavailable.";
+                    break;
+                case error.TIMEOUT:
+                    message = "The request to get user location timed out.";
+                    break;
+                default:
+                    message = `An unknown error occurred: ${error.message}`;
+                    break;
+            }
+            logEvent(`ERROR: ${message}`, true);
+            showModal("Location Error", message);
+            stopGeofencing(); // Stop on failure
+        }
+
+        /**
+         * Starts the location tracking process.
+         */
+        function startGeofencing() {
+            if (!navigator.geolocation) {
+                showModal("Browser Error", "Geolocation is not supported by your browser.");
+                return;
+            }
+
+            // Options for watching position
+            const options = {
+                enableHighAccuracy: true,
+                timeout: 5000,
+                maximumAge: 0 // No cached position
+            };
+
+            // Start watching position
+            watchId = navigator.geolocation.watchPosition(
+                handleLocationUpdate,
+                handleLocationError,
+                options
+            );
+
+            isTracking = true;
+            toggleButton.textContent = 'Stop Tracking';
+            toggleButton.classList.remove('bg-green-500', 'hover:bg-green-600');
+            toggleButton.classList.add('bg-red-500', 'hover:bg-red-600');
+            logEvent('Tracking started. Waiting for first position...', true);
+        }
+
+        /**
+         * Stops the location tracking process.
+         */
+        function stopGeofencing() {
+            if (watchId !== null) {
+                navigator.geolocation.clearWatch(watchId);
+                watchId = null;
+            }
+
+            isTracking = false;
+            isInsideZone = false;
+
+            toggleButton.textContent = 'Start Tracking';
+            toggleButton.classList.remove('bg-red-500', 'hover:bg-red-600');
+            toggleButton.classList.add('bg-green-500', 'hover:bg-green-600');
+
+            zoneStatusDiv.textContent = 'Tracking Stopped';
+            zoneStatusDiv.classList.remove('bg-green-500', 'bg-red-500');
+            zoneStatusDiv.classList.add('bg-gray-500');
+
+            logEvent('Tracking stopped by user.', true);
+        }
+
+        /**
+         * Toggle function for the button.
+         */
+        function toggleTracking() {
+            if (isTracking) {
+                stopGeofencing();
+            } else {
+                startGeofencing();
+            }
+        }
+
+        // --- Event Listeners ---
+
+        toggleButton.addEventListener('click', toggleTracking);
+
+        useCurrentLocationButton.addEventListener('click', () => {
+            logEvent('Attempting to get current location for center point...');
+            navigator.geolocation.getCurrentPosition(
+                (position) => {
+                    const lat = position.coords.latitude.toFixed(5);
+                    const lon = position.coords.longitude.toFixed(5);
+                    centerLatInput.value = lat;
+                    centerLonInput.value = lon;
+                    logEvent(`Center set to current position: ${lat}, ${lon}`);
+                    centerOutput.textContent = `${lat} / ${lon}`;
+                },
+                (error) => {
+                    logEvent('Failed to get current location for center.', true);
+                    showModal("Location Access Required", "Please allow location access to set the geofence center to your current position.");
+                },
+                { enableHighAccuracy: true, timeout: 5000 }
+            );
+        });
+
+        // Initialize display of default center
+        window.onload = () => {
+            const defaultLat = centerLatInput.value;
+            const defaultLon = centerLonInput.value;
+            centerOutput.textContent = `${parseFloat(defaultLat).toFixed(5)} / ${parseFloat(defaultLon).toFixed(5)}`;
+        };
+
+    </script>
+</body>
+</html>
+
+
+<!-- This single-file application is ready to run. It will prompt the user for location permission when they click "Start Tracking" or "Set Center to My Current Location."
+
+**Summary of Features:**
+
+1.  **Mobile-Optimized:** Uses Tailwind CSS for a responsive, clean, card-based layout.
+2.  **Continuous Tracking:** Uses `navigator.geolocation.watchPosition` for real-time location updates, ideal for continuous monitoring on mobile devices.
+3.  **Accurate Geofencing:** Employs the Haversine formula within the JavaScript to accurately calculate the distance between the current GPS coordinates and the defined center point.
+4.  **State Detection:** Detects and logs specific **ZONE ENTRY** and **ZONE EXIT** events.
+5.  **User Interface:** Provides real-time status updates (distance, zone status) and a scrolling event log.
+6.  **UX Focus:** Uses a custom modal for errors instead of disruptive browser `alert()` calls. -->
